@@ -3,7 +3,7 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 
-class SinkhornUtil:
+class Sinkhorn:
     @staticmethod
     def apply(login, iter = 20, eps = 1e-6):
         M = torch.exp(login)
@@ -27,9 +27,46 @@ class SinkhornUtil:
 
 
 class mHCModule(nn.Module):
-    def __init__(self, n_streams, module, device=None):
+    def __init__(self, n_streams,dim, device=None):
         super().__init__()
         self.n_streams = n_streams
-        self.F = module
         self.device = device
-        
+        self.rms = nn.RMSNorm(n_streams * dim)
+
+        self.alpha_pre = nn.Parameter(torch.tensor(0.001))
+        self.alpha_post = nn.Parameter(torch.tensor(0.001))
+        self.alpha_res = nn.Parameter(torch.tensor(0.001))
+
+        self.phi_pre = nn.Linear(n_streams*dim, n_streams, bias = False)
+        self.phi_post = nn.Linear(n_streams*dim, n_streams, bias = False)
+        self.phi_res = nn.Linear(n_streams*dim, n_streams*n_streams, bias = False)
+
+        self.b_pre = nn.Parameter(torch.zeros(n_streams))
+        self.b_post = nn.Parameter(torch.zeros(n_streams))
+        self.b_res = nn.Parameter(torch.zeros(n_streams*n_streams))
+
+    def forward(self,x):
+       
+        b, s, n, d = x.shape
+        x_flat = x.view(b, s, -1)
+        x_norm = self.rms(x_flat)
+
+        h_pre = self.alpha_pre *self.phi_pre(x_norm) + self.b_pre
+        h_post = self.alpha_post*self.phi_post(x_norm) + self.b_post
+        temp = self.phi_res(x_norm).view(b,s, n,n)
+        h_res = self.alpha_res*temp +self.b_res.view(1,1,n,n)
+
+        h_pre = torch.sigmoid(h_pre)
+        h_post = 2*torch.sigmoid(h_post)
+        h_res = Sinkhorn.applylog(h_res)
+
+        resStream = torch.matmul(h_res, x)
+        layIn = torch.einsum('bsn, bsnd -> bsd',h_pre, x)
+
+        def closure(layerOut):
+            hout = torch.einsum('bsn, bsd -> bsnd', h_post, layerOut)
+            return resStream + hout
+        return layIn, closure
+
+
+
