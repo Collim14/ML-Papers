@@ -16,14 +16,19 @@ class Sinkhorn:
 
     @staticmethod
     def applylog(login, iter = 20, eps = 1e-6):
-        logup = torch.zeros((login.shape[-1],), device=login.device, dtype=login.dtype)
-        r = torch.zeros((login.shape[:-1],), device=login.device, dtype=login.dtype)
-        c = torch.zeros((login.shape[:-1],), device=login.device, dtype=login.dtype)
+        logup = torch.zeros((login.shape[-1],))
+        r = torch.zeros((login.shape[:-1]))
+        c = torch.zeros((login.shape[:-1]))
         for _ in range(iter):
             r = logup - torch.logsumexp(login + r.unsqueeze(-2), dim=-1)
             c = logup - torch.logsumexp(login + c.unsqueeze(-1), dim=-2)
 
         return torch.exp(login +r.unsqueeze(-1)+c.unsqueeze(-2))
+    
+class NewtSchulz:
+    @staticmethod
+    def apply(inp):
+        pass
 
 
 class mHCModule(nn.Module):
