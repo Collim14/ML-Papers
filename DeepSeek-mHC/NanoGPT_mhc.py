@@ -8,7 +8,8 @@ class SelfAttention(nn.Module):
         self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
     def forward(self, x):
         B, T, C = x.shape
-        mask = torch.triu(torch.ones(T, T, device=x.device) * float('-inf'), diagonal=1)
+        mask = torch.triu(torch.ones(T, T, device=x.device), diagonal=1)
+        mask = mask.masked_fill(mask == 1, float('-inf'))
         out, _ = self.attn(x, x, x, attn_mask=mask, is_causal=True)
         return out
 
