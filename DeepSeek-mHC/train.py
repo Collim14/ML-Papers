@@ -65,7 +65,8 @@ def run(task, train_loader, test_loader, vocab=None):
         else:
             ITERATIONS = 500
             it = iter(train_loader)
-            for _ in tqdm(range(ITERATIONS), desc="Training Shakespeare"):
+            pbar = tqdm(range(ITERATIONS), desc="Training Shakespeare")
+            for _ in pbar:
                 try: 
                     x, y = next(it)
                 except StopIteration: 
@@ -133,7 +134,8 @@ def plot(task, res):
     
     cols = {'Baseline':'gray', 'mHC (NS)':'green', 'mHC (SH)':'red'}
     
-    def smooth(d): return np.convolve(d, np.ones(5)/5, mode='valid') if len(d)>5 else d
+    def smooth(d): 
+        return np.convolve(d, np.ones(5)/5, mode='valid') if len(d)>5 else d
     
     for name, trk in res.items():
         c = cols.get(name, 'blue')

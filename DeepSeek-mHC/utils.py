@@ -20,7 +20,7 @@ class Tracker:
             if p.grad is not None:
                 gn = p.grad.data.norm(2).item()
                 t_norm += gn ** 2
-                if mhc and any(x in name for x in ['alpha', 'phi', 'beta']):
+                if mhc and any(x in name for x in ['alpha', 'phi', 'b_']):
                     m_norm += gn ** 2
                     
         self.grad_total.append(t_norm ** 0.5)

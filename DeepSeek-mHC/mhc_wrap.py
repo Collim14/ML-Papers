@@ -129,8 +129,8 @@ class mHCWrapper(nn.Module):
             if self.shortcut:
                 resStream = self.shortcut(resStream.reshape(b,s,-1))
                 resStream = resStream.reshape(b,s,n,-1).contiguous()
-                resStream = torch.einsum('bsd, bsn -> bsnd', layOut, h_post)
-            return (resStream +resStream).contiguous()
+            out = torch.einsum('bsd, bsn -> bsnd', layOut, h_post)
+            return (resStream +out).contiguous()
         
 class MHCEntry(nn.Module):
     def __init__(self, n): 
