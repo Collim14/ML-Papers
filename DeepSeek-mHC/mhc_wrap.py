@@ -5,10 +5,11 @@ import numpy as np
 from mhc_implementation import Sinkhorn
 import torch.nn.functional as F
 
+
 @torch.jit.script
-def newton_schulz_autograd(M, steps: int = 5):
+def newton_schulz_autograd(M, steps: int = 25):
     #muon coefficients
-    a, b, c = 3.4445, -4.7750, 2.0315
+    a, b, c= 3.0019, -3.2372, 1.2353
     norm = torch.linalg.matrix_norm(M, ord = 'fro', dim = (-2,-1),keepdim=True)
     X = M.div(norm + 1e-6)
     for _ in range(steps):
@@ -19,7 +20,7 @@ def newton_schulz_autograd(M, steps: int = 5):
         X = b*X3 + c*X5 +a*X
     return X
 
-
+    
 
 class mHCWrapper(nn.Module):
     def __init__(self, n_streams,module, inpdim, outdim = None, stride=1, device=None, useNS = True):
@@ -48,20 +49,13 @@ class mHCWrapper(nn.Module):
             self.phi_pre = nn.Linear(normdim, n_streams, bias = False)
             self.phi_post = nn.Linear(normdim, n_streams, bias = False)
             self.phi_res = nn.Linear(normdim, n_streams*n_streams, bias = False)
+            
             bias_shape = (self.n_streams,)
             res_bias_shape = (self.n_streams*self.n_streams,)
 
-        self.alpha_pre = nn.Parameter(torch.tensor(0.001))
-        self.alpha_post = nn.Parameter(torch.tensor(0.001))
-        self.alpha_res = nn.Parameter(torch.tensor(0.001))
-
-        self.b_pre = nn.Parameter(torch.zeros(bias_shape))
-        self.b_post = nn.Parameter(torch.zeros(bias_shape))
-        self.b_res = nn.Parameter(torch.zeros(res_bias_shape))
-        if self.useNS:
-            self.conditioner = newton_schulz_autograd
-        else:
-            self.conditioner = Sinkhorn.applylog
+        self.alpha_pre = nn.Parameter(torch.tensor(0.01))
+        self.alpha_post = nn.Parameter(torch.tensor(0.01))
+        self.alpha_res = nn.Parameter(torch.tensor(0.01))
 
         self.shortcut = None
         if self.inpdim != self.outdim or self.stride > 1:
@@ -70,7 +64,29 @@ class mHCWrapper(nn.Module):
             else:
                 self.shortcut = nn.Linear(self.inpdim*self.n_streams, self.outdim*self.n_streams, bias = False)
 
+        self.apply(self._init_weights)
+        
 
+        self.b_pre = nn.Parameter(torch.zeros(bias_shape))
+        self.b_post = nn.Parameter(torch.zeros(bias_shape))
+        self.b_res = nn.Parameter(torch.zeros(res_bias_shape))
+        if self.useNS:
+           self.conditioner = newton_schulz_autograd
+
+        elif self.useNS is None:
+            self.conditioner = lambda x: x
+        else:
+            self.conditioner = Sinkhorn.apply
+       
+
+        
+
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Linear, nn.Conv2d)):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+  
     def forward(self,x):
         if self.is2d:
             b,n,c,h,w = x.shape

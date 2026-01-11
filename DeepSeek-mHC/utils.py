@@ -4,6 +4,7 @@ from torchvision import datasets, transforms
 import requests
 import os
 
+
 class Tracker:
     def __init__(self):
         self.losses = []

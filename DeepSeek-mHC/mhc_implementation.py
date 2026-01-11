@@ -11,9 +11,6 @@ class Sinkhorn:
             M = M / (M.sum(dim = -1, keepdim = True)+eps)
             M= M / (M.sum(dim = -2, keepdim = True)+eps)
         return M
-
-    
-
     @staticmethod
     def applylog(login, iter = 20, eps = 1e-6):
         logup = torch.zeros((login.shape[-1],))
@@ -25,10 +22,6 @@ class Sinkhorn:
 
         return torch.exp(login +r.unsqueeze(-1)+c.unsqueeze(-2))
     
-class NewtSchulz:
-    @staticmethod
-    def apply(inp):
-        pass
 
 
 class mHCModule(nn.Module):

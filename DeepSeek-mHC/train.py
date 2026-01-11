@@ -19,9 +19,10 @@ RESULTS_DIR = "results"
 
 def run(task, train_loader, test_loader, vocab=None):
     variants = {
-        'Baseline': 'base',
         'mHC (NS)': 'true',
-        'mHC (SH)': 'false'
+        'mHC (SH)': 'false',
+        'HC': None,
+        'Baseline': 'base'
     }
     
     results = {}
@@ -32,14 +33,19 @@ def run(task, train_loader, test_loader, vocab=None):
         
         if task == "MNIST":
             if mode == 'base': 
+
                 model = MNISTModel(mhc=False)
+            elif mode == None:
+                model = MNISTModel(mhc=True, useNS=None)
             else: 
                 model = MNISTModel(mhc=True, useNS=(mode=='true'))
         else:
             if mode == 'base': 
-                model = NanoGPT(vocab, dim=64, n_streams=4, mhc=False)
+                model = NanoGPT(vocab, dim=64,  n_streams=4,depth=24, mhc=False)
+            elif mode == None:
+                model = NanoGPT(vocab, dim=64, n_streams=4,depth = 24,  mhc=True, useNS=None)
             else: 
-                model = NanoGPT(vocab, dim=64, n_streams=4, mhc=True, useNS=(mode=='true'))
+                model = NanoGPT(vocab, dim=64, n_streams=4,depth = 24,  mhc=True, useNS=(mode=='true'))
             
         model = model.to(DEVICE)
         opt = optim.AdamW(model.parameters(), lr=1e-3)
@@ -48,7 +54,7 @@ def run(task, train_loader, test_loader, vocab=None):
 
         model.train()
         if task == "MNIST":
-            EPOCHS = 3
+            EPOCHS = 1
             for epoch in range(EPOCHS):
                 pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
                 for x, y in pbar:
@@ -57,13 +63,13 @@ def run(task, train_loader, test_loader, vocab=None):
                     pred = model(x)
                     loss = crit(pred, y)
                     loss.backward()
+                    trk.update(loss.item(), model, mhc=(mode!='base'))
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     opt.step()
                     acc = (pred.argmax(1) == y).float().mean().item()
-                    trk.update(loss.item(), model, mhc=(mode!='base'))
                     pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.2%}")
         else:
-            ITERATIONS = 500
+            ITERATIONS = 50
             it = iter(train_loader)
             pbar = tqdm(range(ITERATIONS), desc="Training Shakespeare")
             for _ in pbar:
@@ -81,10 +87,11 @@ def run(task, train_loader, test_loader, vocab=None):
                 loss = crit(pred.view(B*T, C), y.view(B*T))
                 
                 loss.backward()
+                trk.update(loss.item(), model, mhc=(mode!='base'))
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 opt.step()
                 acc = (pred.argmax(dim=-1) == y).float().mean().item()
-                trk.update(loss.item(), model, mhc=(mode!='base'))
+                
                 pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.2%}")
 
         model.eval()
@@ -132,12 +139,13 @@ def plot(task, res):
     fig, ax = plt.subplots(1, 3, figsize=(18, 5))
     fig.suptitle(f"{task} Results", fontsize=16)
     
-    cols = {'Baseline':'gray', 'mHC (NS)':'green', 'mHC (SH)':'red'}
+    cols = {'HC':'blue','Baseline':'gray', 'mHC (NS)':'green', 'mHC (SH)':'red'}
     
     def smooth(d): 
         return np.convolve(d, np.ones(5)/5, mode='valid') if len(d)>5 else d
     
-    for name, trk in res.items():
+    for name, data in res.items():
+        trk = data['tracker']
         c = cols.get(name, 'blue')
         if len(trk.losses) > 10:
             ax[0].plot(smooth(trk.losses), label=name, color=c)
@@ -148,7 +156,9 @@ def plot(task, res):
     ax[0].set_title("Training Loss")
     ax[0].legend()
     ax[1].set_title("Total Gradient Norm")
+    ax[1].set_yscale('log')
     ax[2].set_title("MHC Mixing Gradients")
+    ax[2].set_yscale('log')
     
     plt.savefig(f"{RESULTS_DIR}/{task}_plot.png")
     plt.show()
