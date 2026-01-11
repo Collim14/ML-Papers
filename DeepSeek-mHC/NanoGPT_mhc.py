@@ -37,12 +37,13 @@ class Block(nn.Module):
 
 
 class NanoGPT(nn.Module):
-    def __init__(self, vocab_size, dim=64, n_streams=4, depth=2, block_size=256, mhc=True, useNS=False):
+    def __init__(self, vocab_size, dim=64, n_streams=4, depth=2, block_size=256, mhc=True, useNS=False, static = False):
         super().__init__()
         self.mhc = mhc
         self.n_streams = n_streams if mhc else 1
         self.useNS = useNS
         self.block_size = block_size
+        self.static = static
         
         self.token_embed = nn.Embedding(vocab_size, dim)
         self.pos_embed = nn.Parameter(torch.randn(1, block_size, dim) * 0.02)
@@ -67,7 +68,7 @@ class NanoGPT(nn.Module):
                     return x + self.mod(x)
             return StandardResidual(module)
 
-        return mHCWrapper(n_streams=self.n_streams, module=module, inpdim=dim, useNS=self.useNS)
+        return mHCWrapper(n_streams=self.n_streams, module=module, inpdim=dim, useNS=self.useNS, static = self.static)
 
     def forward(self, idx):
         B, T = idx.shape

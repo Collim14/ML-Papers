@@ -23,7 +23,7 @@ def newton_schulz_autograd(M, steps: int = 25):
     
 
 class mHCWrapper(nn.Module):
-    def __init__(self, n_streams,module, inpdim, outdim = None, stride=1, device=None, useNS = True):
+    def __init__(self, n_streams,module, inpdim, outdim = None, stride=1, device=None, useNS = True, static = False):
         super().__init__()
         self.n_streams = n_streams
         self.device = device
@@ -32,26 +32,44 @@ class mHCWrapper(nn.Module):
         self.outdim = outdim if outdim is not None else inpdim
         self.stride = stride
         self.useNS =useNS
+        self.static = static
 
         self.is2d = isinstance(module, (nn.Conv2d, nn.Sequential)) and \
                      any(isinstance(m, nn.Conv2d) for m in module) if isinstance(module, nn.Sequential) else isinstance(module, nn.Conv2d)
         normdim = self.inpdim*self.n_streams
-
-        if self.is2d:
-            self.norm = nn.GroupNorm(self.n_streams, normdim)
-            self.phi_pre = nn.Conv2d(normdim, n_streams, kernel_size = 1, bias = False)
-            self.phi_post = nn.Conv2d(normdim, n_streams, kernel_size = 1,  bias = False)
-            self.phi_res = nn.Conv2d(normdim, n_streams*n_streams,  kernel_size = 1, bias = False)
-            bias_shape = (self.n_streams,1,1)
-            res_bias_shape = (self.n_streams*self.n_streams, 1, 1)
-        else:
-            self.norm = nn.RMSNorm(normdim)
-            self.phi_pre = nn.Linear(normdim, n_streams, bias = False)
-            self.phi_post = nn.Linear(normdim, n_streams, bias = False)
-            self.phi_res = nn.Linear(normdim, n_streams*n_streams, bias = False)
+        if self.static:
+            if self.is2d:
+                self.norm = nn.GroupNorm(self.n_streams, normdim)
+                self.h_pre = nn.Parameter(torch.randn(1, n_streams, 1, 1) * 0.02)
+                self.h_post = nn.Parameter(torch.randn(1, n_streams, 1, 1) * 0.02)
+                self.h_res = nn.Parameter(torch.randn(1, n_streams * n_streams, 1, 1) * 0.02)
+                bias_shape = (self.n_streams, 1, 1)
+                res_bias_shape = (self.n_streams * self.n_streams, 1, 1)
+            else:
+                self.norm = nn.RMSNorm(normdim,elementwise_affine=False)
+                self.h_pre = nn.Parameter(torch.randn(1,n_streams)*0.02)
+                self.h_post = nn.Parameter(torch.randn(n_streams,1)*0.02)
+                self.h_res = nn.Parameter(torch.randn(n_streams,n_streams)*0.02)
+                bias_shape = (self.n_streams,)
+                res_bias_shape = (self.n_streams,self.inpdim)
             
-            bias_shape = (self.n_streams,)
-            res_bias_shape = (self.n_streams*self.n_streams,)
+        else:
+            if self.is2d:
+                self.norm = nn.GroupNorm(self.n_streams, normdim)
+                self.phi_pre = nn.Conv2d(normdim, n_streams, kernel_size = 1, bias = False)
+                self.phi_post = nn.Conv2d(normdim, n_streams, kernel_size = 1,  bias = False)
+                self.phi_res = nn.Conv2d(normdim, n_streams*n_streams,  kernel_size = 1, bias = False)
+                bias_shape = (self.n_streams,1,1)
+                res_bias_shape = (self.n_streams*self.n_streams, 1, 1)
+            else:
+                self.norm = nn.RMSNorm(normdim,elementwise_affine=False)
+                self.phi_pre = nn.Linear(normdim, n_streams, bias = False)
+                self.phi_post = nn.Linear(normdim, n_streams, bias = False)
+                self.phi_res = nn.Linear(normdim, n_streams*n_streams, bias = False)
+                bias_shape = (self.n_streams,)
+                res_bias_shape = (self.n_streams*self.n_streams,)
+            
+        
 
         self.alpha_pre = nn.Parameter(torch.tensor(0.01))
         self.alpha_post = nn.Parameter(torch.tensor(0.01))
@@ -101,52 +119,99 @@ class mHCWrapper(nn.Module):
         x_norm = self.norm(x_flat)
 
         #Now 2d it is (b,n,h,w), and otherwise (b, s, n)
-        h_pre = self.alpha_pre *self.phi_pre(x_norm) + self.b_pre
-        #Now 2d it is (b,n,h,w), and otherwise (b, s, n)
-        h_post = self.alpha_post*self.phi_post(x_norm) + self.b_post
+        if self.static:
+            h_pre = self.h_pre
+            #Now 2d it is (b,n,h,w), and otherwise (b, s, n)
+            h_post = self.h_post
         #Now 2d it is (b,n*n,h,w), and otherwise (b, s, n*n)
-        init_res = self.alpha_res*self.phi_res(x_norm) +self.b_res
+            init_res = self.h_res
+        else:
+            h_pre = self.alpha_pre *self.phi_pre(x_norm) + self.b_pre
+        #Now 2d it is (b,n,h,w), and otherwise (b, s, n)
+            h_post = self.alpha_post*self.phi_post(x_norm) + self.b_post
+        #Now 2d it is (b,n*n,h,w), and otherwise (b, s, n*n)
+            init_res = self.alpha_res*self.phi_res(x_norm) +self.b_res
 
         h_pre = torch.sigmoid(h_pre)
         h_post = 2*torch.sigmoid(h_post)
-
-        if self.is2d:
+        if self.static:
+            if self.is2d:
             # (B, n*n, h,w) input, shaped to (b, n, n, h, w) but needs (b,h,w,n,n) for sinkhorn
-            h_res = init_res.reshape(b,n,n,h,w).permute(0,3,4,1,2).contiguous()
+                h_res = init_res.view(1,n,n,1,1).permute(0,3,4,1,2).contiguous()
             #h_res = Sinkhorn.applylog(h_res)
-            h_res = self.conditioner(h_res)
+                h_res = self.conditioner(h_res)
             #Now we need layer inputs
-            layIn = (x*h_pre.unsqueeze(2)).sum(dim=1).contiguous()
-        else:
+                layIn = (x*h_pre.unsqueeze(2)).sum(dim=1).contiguous()
+            else:
             #(B, s, n*n) input, we want (b, s, n, n)
-            h_res = init_res.reshape(b,s,n,n).contiguous()
+                h_post = h_post.view(1,1, n)
+                h_res = init_res.view(1,1,n,n).contiguous()
            # h_res = Sinkhorn.applylog(h_res)
-            h_res = self.conditioner(h_res)
-            layIn = torch.einsum('bsn, bsnd -> bsd',h_pre, x).contiguous()
+                h_res = self.conditioner(h_res)
+                h_pre = h_pre.view(1,1,n)
+                layIn = torch.einsum('bsn, bsnd -> bsd',h_pre, x).contiguous()
+        else:
+            if self.is2d:
+            # (B, n*n, h,w) input, shaped to (b, n, n, h, w) but needs (b,h,w,n,n) for sinkhorn
+                h_res = init_res.reshape(b,n,n,h,w).permute(0,3,4,1,2).contiguous()
+            #h_res = Sinkhorn.applylog(h_res)
+                h_res = self.conditioner(h_res)
+            #Now we need layer inputs
+                layIn = (x*h_pre.unsqueeze(2)).sum(dim=1).contiguous()
+            else:
+            #(B, s, n*n) input, we want (b, s, n, n)
+                h_res = init_res.reshape(b,s,n,n).contiguous()
+           # h_res = Sinkhorn.applylog(h_res)
+                h_res = self.conditioner(h_res)
+                layIn = torch.einsum('bsn, bsnd -> bsd',h_pre, x).contiguous()
+
+        
 
         layOut = self.module(layIn)
-
-        if self.is2d:
+        if self.static:
+            if self.is2d:
             #Because of matmul looking at last two dims, we need to permute x to multiply across matrices of dims
             #(n,n)x(n,c)
-            xp = x.permute(0,3,4,1,2).contiguous()
+                xp = x.permute(0,3,4,1,2).contiguous()
             #permute back once calculated
-            resStream = torch.matmul(h_res,xp).permute(0,3,4,1,2).contiguous()
-            if self.shortcut:
-                resStream = self.shortcut(resStream.reshape(b,-1,h,w)).contiguous()
-                resStream = resStream.reshape(b, n, -1, layOut.shape[2], layOut.shape[3])
-                if self.stride > 1:
-                    h_post = F.avg_pool2d(h_post, self.stride, self.stride)
-            return (resStream +layOut.unsqueeze(1)* h_post.unsqueeze(2)).contiguous()
+                resStream = torch.matmul(h_res,xp).permute(0,3,4,1,2).contiguous()
+             
+                if self.shortcut:
+                    resStream = self.shortcut(resStream.reshape(b,-1,h,w)).contiguous()
+                    resStream = resStream.reshape(b, n, -1, layOut.shape[2], layOut.shape[3])
+               
+                return (resStream +layOut.unsqueeze(1)* h_post.unsqueeze(2)).contiguous()
                 
             
+            else:
+                resStream = torch.matmul(h_res,x).contiguous()
+                if self.shortcut:
+                    resStream = self.shortcut(resStream.reshape(b,s,-1))
+                    resStream = resStream.reshape(b,s,n,-1).contiguous()
+                out = torch.einsum('bsd, bsn -> bsnd', layOut, h_post)
+                return (resStream +out).contiguous()
         else:
-            resStream = torch.matmul(h_res,x).contiguous()
-            if self.shortcut:
-                resStream = self.shortcut(resStream.reshape(b,s,-1))
-                resStream = resStream.reshape(b,s,n,-1).contiguous()
-            out = torch.einsum('bsd, bsn -> bsnd', layOut, h_post)
-            return (resStream +out).contiguous()
+            if self.is2d:
+            #Because of matmul looking at last two dims, we need to permute x to multiply across matrices of dims
+            #(n,n)x(n,c)
+                xp = x.permute(0,3,4,1,2).contiguous()
+            #permute back once calculated
+                resStream = torch.matmul(h_res,xp).permute(0,3,4,1,2).contiguous()
+                if self.shortcut:
+                    resStream = self.shortcut(resStream.reshape(b,-1,h,w)).contiguous()
+                    resStream = resStream.reshape(b, n, -1, layOut.shape[2], layOut.shape[3])
+                    if self.stride > 1:
+                        h_post = F.avg_pool2d(h_post, self.stride, self.stride)
+                return (resStream +layOut.unsqueeze(1)* h_post.unsqueeze(2)).contiguous()
+                
+            
+            else:
+                resStream = torch.matmul(h_res,x).contiguous()
+                if self.shortcut:
+                    resStream = self.shortcut(resStream.reshape(b,s,-1))
+                    resStream = resStream.reshape(b,s,n,-1).contiguous()
+                out = torch.einsum('bsd, bsn -> bsnd', layOut, h_post)
+                return (resStream +out).contiguous()
         
 class MHCEntry(nn.Module):
     def __init__(self, n): 

@@ -3,12 +3,13 @@ import torch.nn as nn
 from mhc_wrap import mHCWrapper, MHCEntry, MHCExit
 
 class MNISTModel(nn.Module):
-    def __init__(self, n_streams=4, num_classes=10,mhc = False,useNS=False):
+    def __init__(self, n_streams=4, num_classes=10,mhc = False,useNS=False, static = False):
         super().__init__()
         self.mhc = mhc
         self.n_streams = n_streams if mhc else 1
         self.num_classes = num_classes
         self.useNS = useNS
+        self.static = static
         self.stem = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=3, padding=1),
             nn.ReLU()
@@ -48,7 +49,7 @@ class MNISTModel(nn.Module):
     def _wrap(self, module, in_dim, out_dim,stride):
         if not self.mhc:
             return module
-        return mHCWrapper(n_streams = self.n_streams, module = module, inpdim = in_dim, outdim=out_dim, stride=stride, useNS = self.useNS)
+        return mHCWrapper(n_streams = self.n_streams, module = module, inpdim = in_dim, outdim=out_dim, stride=stride, useNS = self.useNS, static = self.static)
     def forward(self, x):
         x = self.stem(x)
         x = self.entry(x)
