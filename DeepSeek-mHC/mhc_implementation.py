@@ -2,7 +2,8 @@ import torch.nn as nn
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
-
+DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 class Sinkhorn:
     @staticmethod
     def apply(login, iter = 20, eps = 1e-6):
@@ -46,13 +47,13 @@ class mHCModule(nn.Module):
     def forward(self,x):
        
         b, s, n, d = x.shape
-        x_flat = x.view(b, s, -1)
+        x_flat = x.reshape(b, s, -1)
         x_norm = self.rms(x_flat)
 
         h_pre = self.alpha_pre *self.phi_pre(x_norm) + self.b_pre
         h_post = self.alpha_post*self.phi_post(x_norm) + self.b_post
-        temp = self.phi_res(x_norm).view(b,s, n,n)
-        h_res = self.alpha_res*temp +self.b_res.view(1,1,n,n)
+        temp = self.phi_res(x_norm).reshape(b,s, n,n)
+        h_res = self.alpha_res*temp +self.b_res.reshape(1,1,n,n)
 
         h_pre = torch.sigmoid(h_pre)
         h_post = 2*torch.sigmoid(h_post)

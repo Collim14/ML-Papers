@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from mhc_wrap import mHCWrapper, MHCEntry, MHCExit
-
+DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 class MNISTModel(nn.Module):
     def __init__(self, n_streams=4, num_classes=10,mhc = False,useNS=False, static = False):
         super().__init__()
@@ -19,22 +19,22 @@ class MNISTModel(nn.Module):
 
         self.backbone = nn.Sequential(
             self._wrap(
-                nn.Sequential(nn.Conv2d(32,32,3,padding=1),
+                nn.Sequential(nn.Conv2d(32,32,3,padding=1, device = DEVICE),
                               nn.BatchNorm2d(32),
                 nn.ReLU()
             ), in_dim=32, out_dim =32, stride = 1),
             self._wrap(
-                nn.Sequential(nn.Conv2d(32,64,3,stride = 2, padding=1),
+                nn.Sequential(nn.Conv2d(32,64,3,stride = 2, padding=1, device = DEVICE),
                               nn.BatchNorm2d(64),
                 nn.ReLU()
             ), in_dim=32, out_dim = 64,stride = 2),
             self._wrap(
-                nn.Sequential(nn.Conv2d(64,64,3,stride = 1, padding=1),
+                nn.Sequential(nn.Conv2d(64,64,3,stride = 1, padding=1, device = DEVICE),
                               nn.BatchNorm2d(64),
                 nn.ReLU()
             ), in_dim=64,out_dim = 64, stride = 1),
             self._wrap(
-                nn.Sequential(nn.Conv2d(64, 128,3,stride = 2, padding=1),
+                nn.Sequential(nn.Conv2d(64, 128,3,stride = 2, padding=1, device = DEVICE),
                               nn.BatchNorm2d(128),
                 nn.ReLU()
             ), in_dim=64, out_dim = 128,stride = 2),

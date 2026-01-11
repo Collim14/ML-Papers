@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mhc_implementation import Sinkhorn
 import torch.nn.functional as F
-
+DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 @torch.jit.script
 def newton_schulz_autograd(M, steps: int = 25):
@@ -40,25 +40,25 @@ class mHCWrapper(nn.Module):
         if self.static:
             if self.is2d:
                 self.norm = nn.GroupNorm(self.n_streams, normdim)
-                self.h_pre = nn.Parameter(torch.randn(1, n_streams, 1, 1) * 0.02)
-                self.h_post = nn.Parameter(torch.randn(1, n_streams, 1, 1) * 0.02)
-                self.h_res = nn.Parameter(torch.randn(1, n_streams * n_streams, 1, 1) * 0.02)
+                self.h_pre = nn.Parameter(torch.randn((1, n_streams, 1, 1), device = DEVICE) * 0.02)
+                self.h_post = nn.Parameter(torch.randn((1, n_streams, 1, 1), device = DEVICE) * 0.02)
+                self.h_res = nn.Parameter(torch.randn((1, n_streams * n_streams, 1, 1), device = DEVICE) * 0.02)
                 bias_shape = (self.n_streams, 1, 1)
                 res_bias_shape = (self.n_streams * self.n_streams, 1, 1)
             else:
                 self.norm = nn.RMSNorm(normdim,elementwise_affine=False)
-                self.h_pre = nn.Parameter(torch.randn(1,n_streams)*0.02)
-                self.h_post = nn.Parameter(torch.randn(n_streams,1)*0.02)
-                self.h_res = nn.Parameter(torch.randn(n_streams,n_streams)*0.02)
+                self.h_pre = nn.Parameter(torch.randn((1,n_streams), device = DEVICE)*0.02)
+                self.h_post = nn.Parameter(torch.randn((n_streams,1), device = DEVICE)*0.02)
+                self.h_res = nn.Parameter(torch.randn((n_streams,n_streams), device = DEVICE)*0.02)
                 bias_shape = (self.n_streams,)
                 res_bias_shape = (self.n_streams,self.inpdim)
             
         else:
             if self.is2d:
                 self.norm = nn.GroupNorm(self.n_streams, normdim)
-                self.phi_pre = nn.Conv2d(normdim, n_streams, kernel_size = 1, bias = False)
-                self.phi_post = nn.Conv2d(normdim, n_streams, kernel_size = 1,  bias = False)
-                self.phi_res = nn.Conv2d(normdim, n_streams*n_streams,  kernel_size = 1, bias = False)
+                self.phi_pre = nn.Conv2d(normdim, n_streams, kernel_size = 1, bias = False, device = DEVICE)
+                self.phi_post = nn.Conv2d(normdim, n_streams, kernel_size = 1,  bias = False, device = DEVICE)
+                self.phi_res = nn.Conv2d(normdim, n_streams*n_streams,  kernel_size = 1, bias = False, device = DEVICE)
                 bias_shape = (self.n_streams,1,1)
                 res_bias_shape = (self.n_streams*self.n_streams, 1, 1)
             else:
@@ -71,16 +71,16 @@ class mHCWrapper(nn.Module):
             
         
 
-        self.alpha_pre = nn.Parameter(torch.tensor(0.01))
-        self.alpha_post = nn.Parameter(torch.tensor(0.01))
-        self.alpha_res = nn.Parameter(torch.tensor(0.01))
+        self.alpha_pre = nn.Parameter(torch.tensor(0.01, device = DEVICE))
+        self.alpha_post = nn.Parameter(torch.tensor(0.01, device = DEVICE))
+        self.alpha_res = nn.Parameter(torch.tensor(0.01, device = DEVICE))
 
         self.shortcut = None
         if self.inpdim != self.outdim or self.stride > 1:
             if self.is2d:
-                self.shortcut = nn.Conv2d(self.inpdim*self.n_streams, self.outdim*self.n_streams, kernel_size = 1, stride = self.stride,groups=self.n_streams, bias =False)
+                self.shortcut = nn.Conv2d(self.inpdim*self.n_streams, self.outdim*self.n_streams, kernel_size = 1, stride = self.stride,groups=self.n_streams, bias =False, device = DEVICE)
             else:
-                self.shortcut = nn.Linear(self.inpdim*self.n_streams, self.outdim*self.n_streams, bias = False)
+                self.shortcut = nn.Linear(self.inpdim*self.n_streams, self.outdim*self.n_streams, bias = False, device = DEVICE)
 
         self.apply(self._init_weights)
         
@@ -137,23 +137,23 @@ class mHCWrapper(nn.Module):
         if self.static:
             if self.is2d:
             # (B, n*n, h,w) input, shaped to (b, n, n, h, w) but needs (b,h,w,n,n) for sinkhorn
-                h_res = init_res.view(1,n,n,1,1).permute(0,3,4,1,2).contiguous()
+                h_res = init_res.reshape(1,n,n,1,1).contiguous().permute(0,3,4,1,2).clone()
             #h_res = Sinkhorn.applylog(h_res)
                 h_res = self.conditioner(h_res)
             #Now we need layer inputs
                 layIn = (x*h_pre.unsqueeze(2)).sum(dim=1).contiguous()
             else:
             #(B, s, n*n) input, we want (b, s, n, n)
-                h_post = h_post.view(1,1, n)
-                h_res = init_res.view(1,1,n,n).contiguous()
+                h_post = h_post.reshape(1,1, n).contiguous()
+                h_res = init_res.reshape(1,1,n,n).contiguous()
            # h_res = Sinkhorn.applylog(h_res)
                 h_res = self.conditioner(h_res)
-                h_pre = h_pre.view(1,1,n)
+                h_pre = h_pre.reshape(1,1,n).contiguous()
                 layIn = torch.einsum('bsn, bsnd -> bsd',h_pre, x).contiguous()
         else:
             if self.is2d:
             # (B, n*n, h,w) input, shaped to (b, n, n, h, w) but needs (b,h,w,n,n) for sinkhorn
-                h_res = init_res.reshape(b,n,n,h,w).permute(0,3,4,1,2).contiguous()
+                h_res = init_res.reshape(b,n,n,h,w).contiguous().permute(0,3,4,1,2).clone()
             #h_res = Sinkhorn.applylog(h_res)
                 h_res = self.conditioner(h_res)
             #Now we need layer inputs
@@ -172,13 +172,13 @@ class mHCWrapper(nn.Module):
             if self.is2d:
             #Because of matmul looking at last two dims, we need to permute x to multiply across matrices of dims
             #(n,n)x(n,c)
-                xp = x.permute(0,3,4,1,2).contiguous()
+                xp = x.contiguous().permute(0,3,4,1,2).clone()
             #permute back once calculated
-                resStream = torch.matmul(h_res,xp).permute(0,3,4,1,2).contiguous()
+                resStream = torch.matmul(h_res,xp).contiguous().permute(0,3,4,1,2).clone()
              
                 if self.shortcut:
-                    resStream = self.shortcut(resStream.reshape(b,-1,h,w)).contiguous()
-                    resStream = resStream.reshape(b, n, -1, layOut.shape[2], layOut.shape[3])
+                    resStream = self.shortcut(resStream.reshape(b,-1,h,w)).contiguous().clone()
+                    resStream = resStream.reshape(b, n, -1, layOut.shape[2], layOut.shape[3]).contiguous()
                
                 return (resStream +layOut.unsqueeze(1)* h_post.unsqueeze(2)).contiguous()
                 
@@ -186,20 +186,20 @@ class mHCWrapper(nn.Module):
             else:
                 resStream = torch.matmul(h_res,x).contiguous()
                 if self.shortcut:
-                    resStream = self.shortcut(resStream.reshape(b,s,-1))
+                    resStream = self.shortcut(resStream.reshape(b,s,-1)).contiguous()
                     resStream = resStream.reshape(b,s,n,-1).contiguous()
-                out = torch.einsum('bsd, bsn -> bsnd', layOut, h_post)
+                out = torch.einsum('bsd, bsn -> bsnd', layOut, h_post).contiguous()
                 return (resStream +out).contiguous()
         else:
             if self.is2d:
             #Because of matmul looking at last two dims, we need to permute x to multiply across matrices of dims
             #(n,n)x(n,c)
-                xp = x.permute(0,3,4,1,2).contiguous()
+                xp = x.contiguous().permute(0,3,4,1,2).clone()
             #permute back once calculated
-                resStream = torch.matmul(h_res,xp).permute(0,3,4,1,2).contiguous()
+                resStream = torch.matmul(h_res,xp).contiguous().permute(0,3,4,1,2).clone()
                 if self.shortcut:
                     resStream = self.shortcut(resStream.reshape(b,-1,h,w)).contiguous()
-                    resStream = resStream.reshape(b, n, -1, layOut.shape[2], layOut.shape[3])
+                    resStream = resStream.reshape(b, n, -1, layOut.shape[2], layOut.shape[3]).contiguous()
                     if self.stride > 1:
                         h_post = F.avg_pool2d(h_post, self.stride, self.stride)
                 return (resStream +layOut.unsqueeze(1)* h_post.unsqueeze(2)).contiguous()
@@ -208,9 +208,9 @@ class mHCWrapper(nn.Module):
             else:
                 resStream = torch.matmul(h_res,x).contiguous()
                 if self.shortcut:
-                    resStream = self.shortcut(resStream.reshape(b,s,-1))
+                    resStream = self.shortcut(resStream.reshape(b,s,-1)).contiguous()
                     resStream = resStream.reshape(b,s,n,-1).contiguous()
-                out = torch.einsum('bsd, bsn -> bsnd', layOut, h_post)
+                out = torch.einsum('bsd, bsn -> bsnd', layOut, h_post).contiguous()
                 return (resStream +out).contiguous()
         
 class MHCEntry(nn.Module):
@@ -230,9 +230,9 @@ class MHCEntry(nn.Module):
 class MHCExit(nn.Module):
     def forward(self, x_stream):
         if x_stream.dim() == 5:
-            return x_stream.mean(dim=1)
+            return x_stream.mean(dim=1).contiguous()
         elif x_stream.dim() == 4:
-            return x_stream.mean(dim=2)
+            return x_stream.mean(dim=2).contiguous()
             
         else:
              raise ValueError(f"MHCExit expects 4D or 5D input, got {x_stream.dim()}D")

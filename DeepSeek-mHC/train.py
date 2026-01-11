@@ -14,7 +14,7 @@ from NanoGPT_mhc import NanoGPT
 from Conv_mhc import MNISTModel
 from datetime import datetime
 
-DEVICE = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
+DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 RESULTS_DIR = "results"
 
 def runs(task, train_loader, test_loader, vocab=None):
@@ -84,7 +84,7 @@ def runs(task, train_loader, test_loader, vocab=None):
                 pred = model(x)
                 
                 B, T, C = pred.shape
-                loss = crit(pred.view(B*T, C), y.view(B*T))
+                loss = crit(pred.reshape(B*T, C), y.reshape(B*T))
                 
                 loss.backward()
                 trk.update(loss.item(), model, mhc=(mode!='base'))
@@ -107,7 +107,7 @@ def runs(task, train_loader, test_loader, vocab=None):
                 
                 if task != "MNIST":
                     B, T, C = pred.shape
-                    loss = crit(pred.view(B*T, C), y.view(B*T))
+                    loss = crit(pred.reshape(B*T, C), y.reshape(B*T))
                     total_test_loss += loss.item()
                     argmax_preds = pred.argmax(dim=-1)
                     correct_preds += (argmax_preds == y).sum().item()
@@ -206,7 +206,7 @@ def run(task, train_loader, test_loader, vocab=None):
                 pred = model(x)
                 
                 B, T, C = pred.shape
-                loss = crit(pred.view(B*T, C), y.view(B*T))
+                loss = crit(pred.reshape(B*T, C), y.reshape(B*T))
                 
                 loss.backward()
                 trk.update(loss.item(), model, mhc=(mode!='base'))
@@ -229,7 +229,7 @@ def run(task, train_loader, test_loader, vocab=None):
                 
                 if task != "MNIST":
                     B, T, C = pred.shape
-                    loss = crit(pred.view(B*T, C), y.view(B*T))
+                    loss = crit(pred.reshape(B*T, C), y.reshape(B*T))
                     total_test_loss += loss.item()
                     argmax_preds = pred.argmax(dim=-1)
                     correct_preds += (argmax_preds == y).sum().item()
@@ -289,17 +289,17 @@ def plot(task, res):
     
 
 if __name__ == "__main__":
-    dl,tl = mnist()
-    res_m = run("MNIST", dl, tl)
-    plot("MNIST", res_m)
+    # dl,tl = mnist()
+    # res_m = run("MNIST", dl, tl)
+    # plot("MNIST", res_m)
     
-    (dl, tl), v = tinyshakespeare()
-    res_g = run("GPT", dl,tl, vocab=v)
-    plot("GPT", res_g)
+    # (dl, tl), v = tinyshakespeare()
+    # res_g = run("GPT", dl,tl, vocab=v)
+    # plot("GPT", res_g)
 
-    dl,tl = mnist()
-    res_m = runs("MNIST", dl, tl)
-    plot("MNIST", res_m)
+    # dl,tl = mnist()
+    # res_m = runs("MNIST", dl, tl)
+    # plot("MNIST", res_m)
     
     (dl, tl), v = tinyshakespeare()
     res_g = runs("GPT", dl,tl, vocab=v)
