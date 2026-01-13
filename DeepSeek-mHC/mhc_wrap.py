@@ -4,26 +4,34 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mhc_implementation import Sinkhorn
 import torch.nn.functional as F
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+import torch.nn.init as init
+DEVICE = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
 
 @torch.jit.script
-def newton_schulz_autograd(M, steps: int = 25):
-    #muon coefficients
+def newton_schulz_autograd(M, steps: int = 20):
     a, b, c= 3.0019, -3.2372, 1.2353
-    norm = torch.linalg.matrix_norm(M, ord = 'fro', dim = (-2,-1),keepdim=True)
-    X = M.div(norm + 1e-6)
+    norm = torch.linalg.matrix_norm(M, ord='fro', dim=(-2, -1), keepdim=True)
+    X = M.div(torch.maximum(norm, torch.tensor(1e-6, device=M.device)))
     for _ in range(steps):
-        X = X.contiguous()
+        if X.dtype == torch.float16 or X.dtype == torch.bfloat16:
+            X = X.float()
+        else:
+            X = X
         X2 = X.transpose(-1, -2) @ X
-        X3 = X@X2
-        X5 = X3@X2
-        X = b*X3 + c*X5 +a*X
+        X3 = X @ X2
+        X5 = X3 @ X2
+        
+        X = a * X + b * X3 + c * X5
+        
+    X = X.to(M.dtype)
+
     return X
 
     
 
 class mHCWrapper(nn.Module):
-    def __init__(self, n_streams,module, inpdim, outdim = None, stride=1, device=None, useNS = True, static = False):
+    def __init__(self, n_streams,module, inpdim, outdim = None, stride=1, device=None, useNS = True, 
+                 static = False, seqavg = False):
         super().__init__()
         self.n_streams = n_streams
         self.device = device
@@ -33,6 +41,7 @@ class mHCWrapper(nn.Module):
         self.stride = stride
         self.useNS =useNS
         self.static = static
+        self.seqavg = seqavg
 
         self.is2d = isinstance(module, (nn.Conv2d, nn.Sequential)) and \
                      any(isinstance(m, nn.Conv2d) for m in module) if isinstance(module, nn.Sequential) else isinstance(module, nn.Conv2d)
@@ -90,6 +99,11 @@ class mHCWrapper(nn.Module):
         self.b_res = nn.Parameter(torch.zeros(res_bias_shape))
         if self.useNS:
            self.conditioner = newton_schulz_autograd
+           iden = torch.eye(n_streams, device=DEVICE).flatten()
+           noise = torch.randn_like(iden) * 0.05
+           #self.b_res = nn.Parameter(iden + noise)
+           #self.b_res = nn.Parameter(torch.eye(n_streams, device=DEVICE).flatten())
+           self.b_res = nn.Parameter(torch.randn(res_bias_shape)*0.2)
 
         elif self.useNS is None:
             self.conditioner = lambda x: x
@@ -100,10 +114,19 @@ class mHCWrapper(nn.Module):
         
 
     def _init_weights(self, module):
-        if isinstance(module, (nn.Linear, nn.Conv2d)):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
+        for name , module in self.named_modules():
+
+            if isinstance(module, (nn.Linear, nn.Conv2d)):
+                if 'phi_res' in name:
+                    init.normal_(module.weight, mean=0.0, std=0.01)
+                    #init.orthogonal_(module.weight)
+                   
+                else:
+                    #init.constant_(module.weight,1/self.n_streams)
+                    init.normal_(module.weight, mean=0.0, std=0.01)
+                  #  init.orthogonal_(module.weight)
+                if module.bias is not None:
+                    init.zeros_(module.bias)
   
     def forward(self,x):
         if self.is2d:
@@ -111,10 +134,15 @@ class mHCWrapper(nn.Module):
             x_flat = x.reshape(b,n*c,h,w).contiguous()
             #final shape of (b, n*c,h,w)
         else:
-       
             b, s, n, d = x.shape
-            x_flat = x.reshape(b, s, -1).contiguous()
-            #final shape of (b, s, n*d)
+            if self.seqavg:
+                xs = x.mean(dim=1)
+                x_flat = xs.reshape(b,-1).contiguous()
+            else:
+
+       
+                x_flat = x.reshape(b, s, -1).contiguous()
+                #final shape of (b, s, n*d)
         
         x_norm = self.norm(x_flat)
 
@@ -131,6 +159,7 @@ class mHCWrapper(nn.Module):
             h_post = self.alpha_post*self.phi_post(x_norm) + self.b_post
         #Now 2d it is (b,n*n,h,w), and otherwise (b, s, n*n)
             init_res = self.alpha_res*self.phi_res(x_norm) +self.b_res
+          
 
         h_pre = torch.sigmoid(h_pre)
         h_post = 2*torch.sigmoid(h_post)
@@ -143,8 +172,9 @@ class mHCWrapper(nn.Module):
             #Now we need layer inputs
                 layIn = (x*h_pre.unsqueeze(2)).sum(dim=1).contiguous()
             else:
-            #(B, s, n*n) input, we want (b, s, n, n)
+            
                 h_post = h_post.reshape(1,1, n).contiguous()
+                #(B, s, n*n) input, we want (b, s, n, n)
                 h_res = init_res.reshape(1,1,n,n).contiguous()
            # h_res = Sinkhorn.applylog(h_res)
                 h_res = self.conditioner(h_res)
@@ -154,14 +184,19 @@ class mHCWrapper(nn.Module):
             if self.is2d:
             # (B, n*n, h,w) input, shaped to (b, n, n, h, w) but needs (b,h,w,n,n) for sinkhorn
                 h_res = init_res.reshape(b,n,n,h,w).contiguous().permute(0,3,4,1,2).clone()
-            #h_res = Sinkhorn.applylog(h_res)
                 h_res = self.conditioner(h_res)
             #Now we need layer inputs
                 layIn = (x*h_pre.unsqueeze(2)).sum(dim=1).contiguous()
             else:
-            #(B, s, n*n) input, we want (b, s, n, n)
-                h_res = init_res.reshape(b,s,n,n).contiguous()
-           # h_res = Sinkhorn.applylog(h_res)
+            
+                if self.seqavg:
+                    h_res = init_res.reshape(b,1,n,n)
+                    h_pre = h_pre.reshape(b,1,n)
+                    h_post = h_post.reshape(b,1,n)
+                else:
+                    #(B, s, n*n) input, we want (b, s, n, n)
+                    h_res = init_res.reshape(b,s,n,n).contiguous()
+                
                 h_res = self.conditioner(h_res)
                 layIn = torch.einsum('bsn, bsnd -> bsd',h_pre, x).contiguous()
 
@@ -207,10 +242,12 @@ class mHCWrapper(nn.Module):
             
             else:
                 resStream = torch.matmul(h_res,x).contiguous()
+                
                 if self.shortcut:
                     resStream = self.shortcut(resStream.reshape(b,s,-1)).contiguous()
                     resStream = resStream.reshape(b,s,n,-1).contiguous()
                 out = torch.einsum('bsd, bsn -> bsnd', layOut, h_post).contiguous()
+                #print(self.b_res)
                 return (resStream +out).contiguous()
         
 class MHCEntry(nn.Module):

@@ -2,12 +2,12 @@ import torch.nn as nn
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+
+DEVICE = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
 class Sinkhorn:
     @staticmethod
     def apply(login, iter = 20, eps = 1e-6):
-        M = torch.exp(login)
+        M = torch.exp(login -login.max())
         for _ in range(iter):
             M = M / (M.sum(dim = -1, keepdim = True)+eps)
             M= M / (M.sum(dim = -2, keepdim = True)+eps)

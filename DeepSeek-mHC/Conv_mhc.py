@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from mhc_wrap import mHCWrapper, MHCEntry, MHCExit
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+DEVICE = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
 class MNISTModel(nn.Module):
     def __init__(self, n_streams=4, num_classes=10,mhc = False,useNS=False, static = False):
         super().__init__()

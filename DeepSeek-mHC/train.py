@@ -14,7 +14,7 @@ from NanoGPT_mhc import NanoGPT
 from Conv_mhc import MNISTModel
 from datetime import datetime
 
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+DEVICE = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
 RESULTS_DIR = "results"
 
 def runs(task, train_loader, test_loader, vocab=None):
@@ -69,7 +69,7 @@ def runs(task, train_loader, test_loader, vocab=None):
                     acc = (pred.argmax(1) == y).float().mean().item()
                     pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.2%}")
         else:
-            ITERATIONS = 1000
+            ITERATIONS = 50
             it = iter(train_loader)
             pbar = tqdm(range(ITERATIONS), desc="Training Shakespeare")
             for _ in pbar:
@@ -191,7 +191,7 @@ def run(task, train_loader, test_loader, vocab=None):
                     acc = (pred.argmax(1) == y).float().mean().item()
                     pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.2%}")
         else:
-            ITERATIONS = 1000
+            ITERATIONS = 50
             it = iter(train_loader)
             pbar = tqdm(range(ITERATIONS), desc="Training Shakespeare")
             for _ in pbar:
@@ -293,13 +293,13 @@ if __name__ == "__main__":
     # res_m = run("MNIST", dl, tl)
     # plot("MNIST", res_m)
     
-    # (dl, tl), v = tinyshakespeare()
-    # res_g = run("GPT", dl,tl, vocab=v)
-    # plot("GPT", res_g)
+    (dl, tl), v = tinyshakespeare()
+    res_g = run("GPT", dl,tl, vocab=v)
+    plot("GPT", res_g)
 
-    # dl,tl = mnist()
-    # res_m = runs("MNIST", dl, tl)
-    # plot("MNIST", res_m)
+    dl,tl = mnist()
+    res_m = runs("MNIST", dl, tl)
+    plot("MNIST", res_m)
     
     (dl, tl), v = tinyshakespeare()
     res_g = runs("GPT", dl,tl, vocab=v)
