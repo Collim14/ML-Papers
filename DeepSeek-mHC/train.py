@@ -4,16 +4,18 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
+import re
 from utils import Tracker, mnist, tinyshakespeare
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 import requests
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 from NanoGPT_mhc import NanoGPT
 from Conv_mhc import MNISTModel
 from datetime import datetime
-
+from mhc_wrap import mHCWrapper
 DEVICE = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
 RESULTS_DIR = "results"
 
@@ -50,7 +52,8 @@ def runs(task, train_loader, test_loader, vocab=None):
         model = model.to(DEVICE)
         opt = optim.AdamW(model.parameters(), lr=1e-3)
         crit = nn.CrossEntropyLoss()
-        trk = Tracker()
+        trk = Tracker(wrapper = mHCWrapper)
+        trk._register_hooks(model)
 
         model.train()
         if task == "MNIST":
@@ -158,6 +161,7 @@ def run(task, train_loader, test_loader, vocab=None):
 
                 model = MNISTModel(mhc=False)
             elif mode == None:
+                #model = MNISTModel(mhc=True, useNS=None)
                 model = MNISTModel(mhc=True, useNS=None)
             else: 
                 model = MNISTModel(mhc=True, useNS=(mode=='true'))
@@ -172,7 +176,8 @@ def run(task, train_loader, test_loader, vocab=None):
         model = model.to(DEVICE)
         opt = optim.AdamW(model.parameters(), lr=1e-3)
         crit = nn.CrossEntropyLoss()
-        trk = Tracker()
+        trk = Tracker(wrapper = mHCWrapper)
+        trk._register_hooks(model)
 
         model.train()
         if task == "MNIST":
@@ -259,43 +264,107 @@ def run(task, train_loader, test_loader, vocab=None):
             json.dump(save_data, f)
             
     return results
+
+
 def plot(task, res):
-    fig, ax = plt.subplots(1, 3, figsize=(18, 5))
-    fig.suptitle(f"{task} Results", fontsize=16)
-    
+    current_time = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+    fig_metrics, ax = plt.subplots(1, 5, figsize=(24, 5))
+    fig_metrics.suptitle(f"{task} Training Metrics", fontsize=16)
+    heatmap_storage = {} 
     cols = {'HC':'blue','Baseline':'gray', 'mHC (NS)':'green', 'mHC (SH)':'red'}
     
     def smooth(d): 
         return np.convolve(d, np.ones(5)/5, mode='valid') if len(d)>5 else d
     
+    def natural_sort_key(s):
+        return [int(text) if text.isdigit() else text.lower()
+            for text in re.split(r'(\d+)', s)]
+
     for name, data in res.items():
-        trk = data['tracker']
-        c = cols.get(name, 'blue')
-        if len(trk.losses) > 10:
-            ax[0].plot(smooth(trk.losses), label=name, color=c)
-            ax[1].plot(smooth(trk.grad_total), label=name, color=c)
+        if isinstance(data, dict) and 'tracker' in data:
+            trk = data['tracker']
+        else:
+            trk = data
+        
+        c = cols.get(name, 'purple')
+        
+        losses = getattr(trk, 'losses', [])
+        if len(losses) > 10:
+            ax[0].plot(smooth(losses), label=name, color=c)
+            ax[1].plot(smooth(getattr(trk, 'grad_total', [])), color=c)
+            
             if 'Baseline' not in name:
-                ax[2].plot(smooth(trk.grad_mixing), label=name, color=c)
+                ax[2].plot(smooth(getattr(trk, 'grad_mixing', [])), color=c)
                 
+            h_max = getattr(trk, 'lhres_max', [])
+            if len(h_max) > 0:
+                ax[3].plot(smooth(h_max), label=f"{name} (Max)", color=c)
+                ax[3].plot(smooth(getattr(trk, 'lhres_mean', [])), color=c, linestyle='--', alpha=0.5)
+            
+            entropy = getattr(trk, 'entropy', [])
+            if len(entropy) > 0:
+                ax[4].plot(smooth(entropy), color=c)
+        
+        spec_data = getattr(trk, 'spectral_norms', {})
+        if spec_data:
+            layers = sorted(spec_data.keys(), key=natural_sort_key)
+            matrix = np.array([spec_data[l] for l in layers])
+            heatmap_storage[name] = {'matrix': matrix, 'layers': layers}
+
     ax[0].set_title("Training Loss")
     ax[0].legend()
-    ax[1].set_title("Total Gradient Norm")
+    ax[1].set_title("Total Grad Norm")
     ax[1].set_yscale('log')
-    ax[2].set_title("MHC Mixing Gradients")
+    ax[2].set_title("MHC Mixing Grads")
     ax[2].set_yscale('log')
-    current_time = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+    ax[3].set_title("H_res Norms")
+    ax[4].set_title("Mixing Entropy")
     
-    plt.savefig(f"{RESULTS_DIR}/{task}_{str(current_time)}_plot.png")
+    fig_metrics.tight_layout()
+    metrics_filename = f"{RESULTS_DIR}/{task}_metrics_{current_time}.png"
+    fig_metrics.savefig(metrics_filename)
+    print(f"Saved metrics: {metrics_filename}")
+    
+    plt.close(fig_metrics)
+    if heatmap_storage:
+        all_values = []
+        for data in heatmap_storage.values():
+            all_values.append(data['matrix'].flatten())
+        
+        if all_values:
+            combined_data = np.concatenate(all_values)
+            g_min = combined_data.min()
+            g_max = combined_data.max()
+            print(f"Heatmap Shared Scale: {g_min:.4f} to {g_max:.4f}")
+
+            for name, data in heatmap_storage.items():
+                matrix = data['matrix']
+                layers = data['layers']
+
+                fig_heatmap = plt.figure(figsize=(10, 8))
+                
+                sns.heatmap(matrix, cmap='magma', yticklabels=layers, 
+                            vmin=g_min, vmax=g_max)
+                
+                plt.title(f"Spectral Norm - {name}\n(Scale: {g_min:.2f} - {g_max:.2f})")
+                plt.xlabel("Iterations")
+                plt.ylabel("Block Depth")
+                hm_filename = f"{RESULTS_DIR}/{name}_spectral_{current_time}.png"
+                plt.savefig(hm_filename, bbox_inches='tight')
+                plt.close(fig_heatmap)
+                print(f"Saved heatmap: {hm_filename}")
+
     
 
 if __name__ == "__main__":
-    # dl,tl = mnist()
-    # res_m = run("MNIST", dl, tl)
-    # plot("MNIST", res_m)
+    dl,tl = mnist()
+    res_m = run("MNIST", dl, tl)
+    plot("MNIST", res_m)
     
     (dl, tl), v = tinyshakespeare()
     res_g = run("GPT", dl,tl, vocab=v)
     plot("GPT", res_g)
+    
 
     dl,tl = mnist()
     res_m = runs("MNIST", dl, tl)

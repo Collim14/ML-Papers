@@ -67,20 +67,20 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-    def __init__(self, config, wrapper_func):
+    def __init__(self, config, wrapper_func, depth = None):
         super().__init__()
         
         attn_branch = nn.Sequential(
             LayerNorm(config.n_embd, bias=config.bias),
             CausalSelfAttention(config)
         )
-        self.attn_wrapper = wrapper_func(attn_branch, config.n_embd)
+        self.attn_wrapper = wrapper_func(attn_branch, config.n_embd, depth = depth)
 
         mlp_branch = nn.Sequential(
             LayerNorm(config.n_embd, bias=config.bias),
             MLP(config)
         )
-        self.mlp_wrapper = wrapper_func(mlp_branch, config.n_embd)
+        self.mlp_wrapper = wrapper_func(mlp_branch, config.n_embd, depth = depth)
 
     def forward(self, x):
         x = self.attn_wrapper(x)
@@ -96,6 +96,13 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True
+
+class StandardResidual(nn.Module):
+    def __init__(self, mod): 
+        super().__init__()
+        self.mod = mod
+    def forward(self, x): 
+        return x + self.mod(x)
 
 class NanoGPT(nn.Module):
     def __init__(self, vocab_size, dim=64, n_streams=4, depth=2, block_size=256, mhc=True, useNS=False, static=False, n_head=4, dropout=0.0):
@@ -122,7 +129,7 @@ class NanoGPT(nn.Module):
         self.drop = nn.Dropout(dropout)
         self.entry = MHCEntry(self.n_streams) if mhc else nn.Identity()
         self.blocks = nn.ModuleList([
-            Block(self.config, self._wrap) for _ in range(depth)
+            Block(self.config, self._wrap, depth = i+1) for i in range(depth)
         ])
         
         self.exit = MHCExit() if mhc else nn.Identity()
@@ -137,15 +144,10 @@ class NanoGPT(nn.Module):
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * depth))
 
-    def _wrap(self, module, dim):
+    def _wrap(self, module, dim, depth = None):
        
         if not self.mhc:
-            class StandardResidual(nn.Module):
-                def __init__(self, mod): 
-                    super().__init__()
-                    self.mod = mod
-                def forward(self, x): 
-                    return x + self.mod(x)
+            
             return StandardResidual(module)
 
         return mHCWrapper(
@@ -153,7 +155,7 @@ class NanoGPT(nn.Module):
             module=module, 
             inpdim=dim, 
             useNS=self.useNS, 
-            static=self.static
+            static=self.static, depth = depth
         )
 
     def _init_weights(self, module):

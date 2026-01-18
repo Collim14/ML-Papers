@@ -2,21 +2,19 @@ import torch.nn as nn
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
-from mhc_implementation import Sinkhorn
 import torch.nn.functional as F
 import torch.nn.init as init
 DEVICE = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
 
 @torch.jit.script
-def newton_schulz_autograd(M, steps: int = 20):
-    a, b, c= 3.0019, -3.2372, 1.2353
+def newton_schulz_autograd(M, steps: int = 25, debug: bool = False):
+    a, b, c = 3.0019, -3.2372, 1.2353
     norm = torch.linalg.matrix_norm(M, ord='fro', dim=(-2, -1), keepdim=True)
     X = M.div(torch.maximum(norm, torch.tensor(1e-6, device=M.device)))
     for _ in range(steps):
         if X.dtype == torch.float16 or X.dtype == torch.bfloat16:
             X = X.float()
-        else:
-            X = X
+        
         X2 = X.transpose(-1, -2) @ X
         X3 = X @ X2
         X5 = X3 @ X2
@@ -24,14 +22,23 @@ def newton_schulz_autograd(M, steps: int = 20):
         X = a * X + b * X3 + c * X5
         
     X = X.to(M.dtype)
-
+    
+    if debug:
+        tol = 0.0001
+        with torch.no_grad():
+            n = X.shape[-1]
+            eye = torch.eye(n, device=X.device, dtype=X.dtype)
+            gram = X.transpose(-1, -2) @ X
+            diff = gram - eye
+            error = diff.abs().max().item()
+            isorth = error<tol
+            print(f"Orthogonal: {isorth}")
     return X
-
     
 
 class mHCWrapper(nn.Module):
     def __init__(self, n_streams,module, inpdim, outdim = None, stride=1, device=None, useNS = True, 
-                 static = False, seqavg = False):
+                 static = False, seqavg = False, depth = None, scale = False):
         super().__init__()
         self.n_streams = n_streams
         self.device = device
@@ -42,6 +49,11 @@ class mHCWrapper(nn.Module):
         self.useNS =useNS
         self.static = static
         self.seqavg = seqavg
+        self.lhres = None
+        self.depth = 1
+        self.scale = scale
+        
+
 
         self.is2d = isinstance(module, (nn.Conv2d, nn.Sequential)) and \
                      any(isinstance(m, nn.Conv2d) for m in module) if isinstance(module, nn.Sequential) else isinstance(module, nn.Conv2d)
@@ -77,6 +89,8 @@ class mHCWrapper(nn.Module):
                 self.phi_res = nn.Linear(normdim, n_streams*n_streams, bias = False)
                 bias_shape = (self.n_streams,)
                 res_bias_shape = (self.n_streams*self.n_streams,)
+
+        
             
         
 
@@ -92,22 +106,41 @@ class mHCWrapper(nn.Module):
                 self.shortcut = nn.Linear(self.inpdim*self.n_streams, self.outdim*self.n_streams, bias = False, device = DEVICE)
 
         self.apply(self._init_weights)
+        if self.scale:
+            self.omega = nn.Parameter(torch.tensor(1.0))
+            identity = torch.eye(self.n_streams)
+            
+            if self.is2d:
+                identity = identity.view(1, 1,1,self.n_streams,self.n_streams)
+            else:
+                identity = identity.view(1, 1, self.n_streams, self.n_streams)
+            self.register_buffer("identity",identity)
+           
         
 
         self.b_pre = nn.Parameter(torch.zeros(bias_shape))
         self.b_post = nn.Parameter(torch.zeros(bias_shape))
-        self.b_res = nn.Parameter(torch.zeros(res_bias_shape))
+        self.b_res = nn.Parameter(torch.ones(res_bias_shape)*0.01)
         if self.useNS:
-           self.conditioner = newton_schulz_autograd
-           iden = torch.eye(n_streams, device=DEVICE).flatten()
-           noise = torch.randn_like(iden) * 0.05
-           #self.b_res = nn.Parameter(iden + noise)
-           #self.b_res = nn.Parameter(torch.eye(n_streams, device=DEVICE).flatten())
-           self.b_res = nn.Parameter(torch.randn(res_bias_shape)*0.2)
+            self.conditioner = newton_schulz_autograd
+            iden = torch.eye(n_streams, device=DEVICE).flatten()
+            noise = torch.randn_like(iden) * 0.05
+            
+            self.b_res = nn.Parameter(torch.empty(self.n_streams, self.n_streams))
+          # self.b_res = nn.Parameter(iden + noise)
+           #self.phi_res = nn.Parameter(torch.eye(n_streams, device=DEVICE).flatten())
+          # self.b_res = nn.Parameter(torch.randn(res_bias_shape)*0.02)
+            with torch.no_grad():
+               init.orthogonal_(self.b_res)
+            if self.is2d:
+                self.b_res = nn.Parameter(self.b_res.flatten().reshape(-1,1,1))
+            else:
+                self.b_res = nn.Parameter(self.b_res.flatten())
 
         elif self.useNS is None:
             self.conditioner = lambda x: x
         else:
+            from utils import Sinkhorn 
             self.conditioner = Sinkhorn.apply
        
 
@@ -120,6 +153,9 @@ class mHCWrapper(nn.Module):
                 if 'phi_res' in name:
                     init.normal_(module.weight, mean=0.0, std=0.01)
                     #init.orthogonal_(module.weight)
+                    # init.eye_(self.phi_res.weight)
+                    # with torch.no_grad():
+                    #     self.phi_res.weight.add_(torch.randn_like(self.phi_res.weight) * 0.01)
                    
                 else:
                     #init.constant_(module.weight,1/self.n_streams)
@@ -200,8 +236,10 @@ class mHCWrapper(nn.Module):
                 h_res = self.conditioner(h_res)
                 layIn = torch.einsum('bsn, bsnd -> bsd',h_pre, x).contiguous()
 
-        
-
+        if self.scale:
+            #omega = torch.sigmoid(self.omega)
+            h_res = (1-self.omega/self.depth)*self.identity +(self.omega/self.depth)*h_res     
+        self.lhres = h_res.detach()
         layOut = self.module(layIn)
         if self.static:
             if self.is2d:
@@ -247,7 +285,7 @@ class mHCWrapper(nn.Module):
                     resStream = self.shortcut(resStream.reshape(b,s,-1)).contiguous()
                     resStream = resStream.reshape(b,s,n,-1).contiguous()
                 out = torch.einsum('bsd, bsn -> bsnd', layOut, h_post).contiguous()
-                #print(self.b_res)
+             
                 return (resStream +out).contiguous()
         
 class MHCEntry(nn.Module):
